@@ -124,3 +124,16 @@ data/audit.jsonl
 ```
 
 Back up the `data/` directory.
+
+## Project documentation
+
+- [Documentation index](docs/README.md)
+- [Product definition](docs/PRODUCT.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap](docs/ROADMAP.md)
+- [Decision log](docs/DECISIONS.md)
+- [Development guide](docs/DEVELOPMENT.md)
+
+These documents describe the current v2 behavior and maintain a cautious path
+for future work. Roadmap items are proposals, not claims that a feature already
+exists.
