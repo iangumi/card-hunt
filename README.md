@@ -1,87 +1,126 @@
-# Card Hunt Local App
+# Card Hunt Local v2
 
-A local, mobile-friendly-ish Streamlit app for your Pokémon card hunt workflow.
+v2 adds the first AI-assisted stage to the working v1 flow:
 
-## What it does
+**store screenshot → local crops → AI exact card identification + price/req extraction → confidence gate → manual market scoring → ranking → purchase ledger**
 
-- Drag/drop a store screenshot
-- Experimental automatic card-region detection
-- Manual crop fallback
-- Shows crops as a reference strip
-- Builds a Hunt worksheet
-- Applies your current rules:
-  - max ¥10,000 per card by default
-  - `req_count > 0` goes to Watch if Released
-  - sold / owned / bought / passed cards are removed from Active ranking
-- Calculates the 100-point Hunt Score
-- Saves hunt sessions
-- Moves purchases into a permanent local ledger
-- Exports CSV and Excel
+## What is new
 
-## Important limitation
+- Gemini vision identification for each card crop
+- Structured output for:
+  - card name
+  - card number
+  - set / promo
+  - year
+  - language
+  - variant
+  - raw / slab and visible grade
+  - store price in JPY
+  - req count
+  - confidence values
+  - possible alternative matches
+  - visible evidence
+- Conservative variant gate:
+  - ambiguous cards are routed to **Needs Review**
+  - cards below the confidence threshold do not enter Active Ranking
+  - you can manually set `Verified=True` after checking
+- Padded context crops to retain price / req stickers
+- Re-analyze a hard card one crop at a time
+- Audit trail for AI results and purchases
+- Token-usage table for the current session
+- Existing local/manual mode still works without an API key
 
-This app does **not** automatically identify cards or fetch sold comps from PSA/PriceCharting/eBay.
+## Privacy / network behavior
 
-Use it as the local workspace:
-`drop screenshot -> crop -> identify/research -> fill worksheet -> rank -> buy -> ledger`
+Cropping, ledger, scoring, and session files remain local.
 
-Later you can add an AI/API layer.
+**Only crops sent through an AI Identify button leave the local machine; those crops are sent to the Gemini API.**
+No API call occurs in normal/manual mode, which remains fully local.
 
 ## Install
 
-Requires Python 3.11+.
+Python 3.11+ recommended.
 
 ### macOS / Linux
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
+unzip card_hunt_local_app_v2.zip
+cd card_hunt_local_app_v2
 
-Or:
+cp .env.example .env
+# Edit .env and add GEMINI_API_KEY
 
-```bash
-chmod +x run.sh
 ./run.sh
 ```
 
 ### Windows PowerShell
 
 ```powershell
-py -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-streamlit run app.py
+Expand-Archive card_hunt_local_app_v2.zip
+cd card_hunt_local_app_v2
+
+Copy-Item .env.example .env
+# Edit .env and add GEMINI_API_KEY
+
+.\run.ps1
 ```
 
-Or run:
+The first run creates `.venv`, installs dependencies and starts Streamlit.
 
-```powershell
-run.ps1
+## API model
+
+Default:
+
+```text
+GEMINI_API_KEY=...
+CARD_HUNT_MODEL=gemini-3.8-flash
+CARD_HUNT_FALLBACK_MODEL=gemini-3.5-flash
 ```
 
-## One-command after first install
+The model selection applies to both the full hunt and one-crop retry workflow.
+Temporary `503 UNAVAILABLE` responses are retried four times with backoff before
+the optional fallback model is used.
 
-macOS / Linux:
+## Migrate your v1 ledger/data
+
+If v1 is next to v2:
+
 ```bash
-./run.sh
+python migrate_v1.py ../card_hunt_local_app
 ```
 
-Windows:
-```powershell
-./run.ps1
+The migration script does not overwrite files that already exist in v2.
+
+You can also manually copy the v1 `data/` folder.
+
+## Recommended workflow
+
+1. Upload screenshot.
+2. Auto-detect or manually crop.
+3. AI Identify All.
+4. Check **Needs Review**.
+5. For difficult cards, retry only that crop.
+6. Correct exact variant manually when required.
+7. Mark `Verified=True`.
+8. Research recent sold comps externally.
+9. Fill the 0–10 market/Hunt Score factors.
+10. Purchase only after the exact-ID gate passes.
+11. Move purchased cards to Ledger.
+
+## Why market research is still manual
+
+v2 intentionally automates **identification + store metadata first**.
+
+This keeps the most error-prone step auditable before we add web/market automation.
+A future v3 can add sold-comp snapshots and research sources after v2 proves reliable.
+
+## Files
+
+```text
+data/ledger.csv
+data/hunts/
+data/crops/
+data/audit.jsonl
 ```
 
-The browser should open automatically.
-
-## Data
-
-Everything stays local:
-
-- `data/ledger.csv` — permanent ledger
-- `data/hunts/` — saved hunt sessions
-- `data/crops/` — card crops
-
-Back up the `data/` folder periodically.
+Back up the `data/` directory.

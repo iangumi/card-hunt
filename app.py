@@ -3,374 +3,506 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
-import hashlib
 import io
-import json
+import os
+import shutil
 
-import cv2
-import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image
 import streamlit as st
+from dotenv import load_dotenv
+
+from card_hunt_core import (
+    DEFAULT_WEIGHTS,
+    LEDGER_COLUMNS,
+    active_filter,
+    append_audit,
+    apply_ai_result,
+    candidate_bool,
+    candidate_value_or,
+    default_candidates,
+    detect_cards,
+    draw_boxes,
+    ensure_dirs,
+    hunt_score_row,
+    load_ledger,
+    make_session_id,
+    make_upload_fingerprint,
+    next_inventory_id,
+    normalize_candidate_dtypes,
+    review_filter,
+    save_crops,
+    save_ledger,
+)
+from ai_identify import api_ready, identify_card
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
 HUNTS_DIR = DATA_DIR / "hunts"
 CROPS_DIR = DATA_DIR / "crops"
 LEDGER_PATH = DATA_DIR / "ledger.csv"
-
-DATA_DIR.mkdir(exist_ok=True)
-HUNTS_DIR.mkdir(parents=True, exist_ok=True)
-CROPS_DIR.mkdir(parents=True, exist_ok=True)
-
-DEFAULT_WEIGHTS = {
-    "value": 25,
-    "demand": 20,
-    "liquidity": 20,
-    "scarcity": 15,
-    "history": 10,
-    "artwork": 5,
-    "condition": 5,
-}
-
-LEDGER_COLUMNS = [
-    "inventory_id",
-    "card_name",
-    "card_number",
-    "set_or_promo",
-    "year",
-    "language",
-    "variant",
-    "raw_or_slab",
-    "grade",
-    "condition",
-    "purchase_price_jpy",
-    "purchase_date",
-    "source",
-    "market_low_jpy",
-    "market_high_jpy",
-    "hunt_score",
-    "deal_edge",
-    "liquidity",
-    "id_confidence",
-    "portfolio_role",
-    "status",
-    "notes",
-]
-
-CANDIDATE_COLUMNS = [
-    "selected",
-    "crop_id",
-    "card_name",
-    "card_number",
-    "set_or_promo",
-    "year",
-    "variant",
-    "price_jpy",
-    "req_count",
-    "status",
-    "value",
-    "demand",
-    "liquidity_score",
-    "scarcity",
-    "history",
-    "artwork",
-    "condition_score",
-    "hunt_score",
-    "deal_edge",
-    "liquidity_grade",
-    "id_confidence",
-    "notes",
-]
+AUDIT_PATH = DATA_DIR / "audit.jsonl"
 
 
-def load_ledger():
-    if LEDGER_PATH.exists():
-        df = pd.read_csv(LEDGER_PATH)
-        for c in LEDGER_COLUMNS:
-            if c not in df.columns:
-                df[c] = None
-        return df[LEDGER_COLUMNS]
-    return pd.DataFrame(columns=LEDGER_COLUMNS)
+def safe_ai_error(error: Exception) -> str:
+    message = str(error)
+    api_key = os.environ.get("GEMINI_API_KEY")
+    return message.replace(api_key, "[REDACTED]") if api_key else message
 
 
-def save_ledger(df):
-    df.to_csv(LEDGER_PATH, index=False)
-
-
-def next_inventory_id(df: pd.DataFrame, prefix="PKM"):
-    nums = []
-    if "inventory_id" in df.columns:
-        for value in df["inventory_id"].dropna().astype(str):
-            try:
-                nums.append(int(value.split("-")[-1]))
-            except Exception:
-                pass
-    return f"{prefix}-{max(nums, default=0)+1:06d}"
-
-
-def hunt_score_row(row):
-    fields = {
-        "value": row.get("value", 0),
-        "demand": row.get("demand", 0),
-        "liquidity": row.get("liquidity_score", 0),
-        "scarcity": row.get("scarcity", 0),
-        "history": row.get("history", 0),
-        "artwork": row.get("artwork", 0),
-        "condition": row.get("condition_score", 0),
-    }
-    total_weight = sum(DEFAULT_WEIGHTS.values())
-    weighted = 0.0
-    for key, weight in DEFAULT_WEIGHTS.items():
-        val = fields.get(key, 0)
-        try:
-            val = float(val)
-        except Exception:
-            val = 0
-        val = max(0, min(10, val))
-        weighted += val * weight
-    return round(weighted / (10 * total_weight) * 100, 1)
-
-
-def make_session_id(file_bytes: bytes):
-    h = hashlib.sha1(file_bytes).hexdigest()[:8]
-    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{h}"
-
-
-def pil_to_cv(img: Image.Image):
-    arr = np.array(img.convert("RGB"))
-    return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-
-
-def detect_cards(img: Image.Image):
-    """
-    Experimental rectangle detector.
-    It tries to find card-like rectangular regions in screenshots.
-    Returns boxes (x1,y1,x2,y2).
-    """
-    bgr = pil_to_cv(img)
-    h, w = bgr.shape[:2]
-
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(gray, 40, 120)
-    edges = cv2.dilate(edges, np.ones((3,3), np.uint8), iterations=1)
-
-    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-    boxes = []
-    img_area = w * h
-    for c in contours:
-        x, y, bw, bh = cv2.boundingRect(c)
-        area = bw * bh
-        if area < img_area * 0.015 or area > img_area * 0.35:
-            continue
-        if bw < 90 or bh < 130:
-            continue
-
-        aspect = bw / bh
-        # Pokemon cards are portrait, but screenshots may include sleeves/labels.
-        if not (0.45 <= aspect <= 0.95):
-            continue
-
-        boxes.append((x, y, x+bw, y+bh))
-
-    # remove near-duplicates / nested boxes
-    boxes = sorted(boxes, key=lambda b: (b[1], b[0]))
-    filtered = []
-    for box in boxes:
-        x1,y1,x2,y2 = box
-        keep = True
-        for fx1,fy1,fx2,fy2 in filtered:
-            inter_x1, inter_y1 = max(x1,fx1), max(y1,fy1)
-            inter_x2, inter_y2 = min(x2,fx2), min(y2,fy2)
-            if inter_x2 > inter_x1 and inter_y2 > inter_y1:
-                inter = (inter_x2-inter_x1)*(inter_y2-inter_y1)
-                area1 = (x2-x1)*(y2-y1)
-                area2 = (fx2-fx1)*(fy2-fy1)
-                iou = inter / (area1 + area2 - inter)
-                if iou > 0.55:
-                    if area1 <= area2:
-                        keep = False
-                        break
-        if keep:
-            filtered.append(box)
-
-    # Sort roughly row-major
-    filtered = sorted(filtered, key=lambda b: (b[1]//80, b[0]))
-    return filtered[:40]
-
-
-def draw_boxes(img: Image.Image, boxes):
-    out = img.convert("RGB").copy()
-    d = ImageDraw.Draw(out)
-    for i, (x1,y1,x2,y2) in enumerate(boxes, start=1):
-        d.rectangle((x1,y1,x2,y2), outline="red", width=5)
-        d.rectangle((x1, y1, x1+46, y1+28), fill="red")
-        d.text((x1+5, y1+4), str(i), fill="white")
-    return out
-
-
-def save_crops(img: Image.Image, boxes, session_id):
-    folder = CROPS_DIR / session_id
-    folder.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for i, box in enumerate(boxes, start=1):
-        crop = img.crop(box)
-        p = folder / f"crop_{i:02d}.jpg"
-        crop.convert("RGB").save(p, quality=94)
-        paths.append(p)
-    return paths
-
-
-def default_candidates(crop_paths):
-    rows = []
-    for i, p in enumerate(crop_paths, start=1):
-        rows.append({
-            "selected": True,
-            "crop_id": i,
-            "card_name": "",
-            "card_number": "",
-            "set_or_promo": "",
-            "year": "",
-            "variant": "",
-            "price_jpy": None,
-            "req_count": 0,
-            "status": "available",
-            "value": 5,
-            "demand": 5,
-            "liquidity_score": 5,
-            "scarcity": 5,
-            "history": 5,
-            "artwork": 5,
-            "condition_score": 5,
-            "hunt_score": 50.0,
-            "deal_edge": "",
-            "liquidity_grade": "",
-            "id_confidence": "",
-            "notes": "",
+def identify_crop_with_feedback(
+    image_path: Path,
+    crop_id: int,
+    model: str,
+    detail: str,
+    status,
+) -> tuple[dict, dict]:
+    def record_runtime_event(event: dict):
+        append_audit(AUDIT_PATH, {
+            "session_id": st.session_state.get("session_id"),
+            **event,
         })
-    return pd.DataFrame(rows, columns=CANDIDATE_COLUMNS)
 
-
-def market_filter(df, max_price):
-    out = df.copy()
-    price = pd.to_numeric(out["price_jpy"], errors="coerce")
-    req = pd.to_numeric(out["req_count"], errors="coerce").fillna(0)
-    status = out["status"].fillna("").str.lower()
-
-    active = (
-        (price <= max_price)
-        & (req == 0)
-        & (~status.isin(["sold", "sold out", "owned", "bought", "passed", "skip"]))
+    fallback_model = os.environ.get(
+        "CARD_HUNT_FALLBACK_MODEL", "gemini-3.5-flash"
     )
-    return out[active].sort_values(["hunt_score", "price_jpy"], ascending=[False, True])
+    return identify_card(
+        image_path,
+        model=model,
+        detail=detail,
+        fallback_model=fallback_model,
+        crop_id=crop_id,
+        event_callback=record_runtime_event,
+        status_callback=status.warning,
+    )
 
 
-st.set_page_config(page_title="Card Hunt Local", page_icon="🃏", layout="wide")
-st.title("Card Hunt Local")
-st.caption("Drop a store screenshot → create crops → build a hunt worksheet → rank → move purchases to your ledger.")
+ensure_dirs(DATA_DIR)
+load_dotenv(APP_DIR / ".env")
+
+st.set_page_config(page_title="Card Hunt Local v2", page_icon="🃏", layout="wide")
+st.title("Card Hunt Local v2")
+st.caption(
+    "Screenshot → crops → AI exact-ID / price / req extraction → confidence gate → "
+    "hunt worksheet → purchase ledger"
+)
 
 with st.sidebar:
     st.header("Hunt rules")
-    max_price = st.number_input("Max price per card (¥)", min_value=0, value=10000, step=500)
-    st.caption("req > 0 is excluded from Active ranking automatically.")
+    max_price = st.number_input("Max price/card (¥)", min_value=0, value=10000, step=500)
+    confidence_threshold = st.slider(
+        "Minimum exact-ID confidence",
+        min_value=0.50,
+        max_value=1.00,
+        value=0.80,
+        step=0.01,
+    )
+
     st.divider()
-    st.header("Score weights")
+    st.header("AI identification")
+    model = st.selectbox(
+        "Model",
+        ["gemini-3.8-flash"],
+        index=0,
+        help="Gemini model used for identification and per-crop retries.",
+    )
+    vision_detail = "high"
+    fallback_model = os.environ.get(
+        "CARD_HUNT_FALLBACK_MODEL", "gemini-3.5-flash"
+    )
+
+    if api_ready():
+        st.success("GEMINI_API_KEY detected")
+    else:
+        st.warning("AI disabled: GEMINI_API_KEY not found")
+        st.code("cp .env.example .env\n# then edit .env")
+
+    st.caption(
+        "When AI identification is used, the selected crop is sent to the Gemini API. "
+        "Manual/local workflow remains available without an API key."
+    )
+    st.caption(f"Fallback after transient retries: `{fallback_model}`")
+
+    st.divider()
+    st.header("Hunt Score")
     st.write(DEFAULT_WEIGHTS)
-    st.caption("Each factor is scored 0–10; the weighted result is 0–100.")
-    st.divider()
-    st.warning("This app does not fetch live sold comps. Add market data manually or use your preferred research source.")
+    st.caption("Market scoring remains manual in v2; AI only handles identification/store metadata.")
 
-tabs = st.tabs(["1. Screenshot Intake", "2. Hunt Worksheet", "3. Purchase Ledger", "4. Export"])
+tabs = st.tabs([
+    "1. Intake",
+    "2. AI Review",
+    "3. Hunt Worksheet",
+    "4. Purchase Ledger",
+    "5. Audit / Export",
+])
 
+# ---------- Intake ----------
 with tabs[0]:
-    uploaded = st.file_uploader("Drop a store screenshot", type=["png","jpg","jpeg","webp"])
+    uploaded = st.file_uploader(
+        "Drop a store screenshot",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=False,
+        key="hunt_screenshot",
+    )
+
     if uploaded:
         file_bytes = uploaded.getvalue()
         img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        session_id = make_session_id(file_bytes)
+        upload_fingerprint = make_upload_fingerprint(file_bytes)
 
-        st.session_state["session_id"] = session_id
-        st.session_state["image"] = img
+        # A widget interaction reruns the script with the same uploaded bytes.
+        # Start a hunt only when those bytes identify a genuinely different file.
+        if (
+            st.session_state.get("upload_fingerprint") != upload_fingerprint
+            or "session_id" not in st.session_state
+        ):
+            session_id = make_session_id(file_bytes)
+            st.session_state["session_id"] = session_id
+            st.session_state["upload_fingerprint"] = upload_fingerprint
+            st.session_state["image"] = img
+            st.session_state["boxes"] = []
+            st.session_state["crop_paths"] = []
+            st.session_state["context_paths"] = []
+            st.session_state["candidates"] = default_candidates([])
+            st.session_state["ai_usages"] = []
+            st.session_state["ai_errors"] = {}
+        else:
+            session_id = st.session_state["session_id"]
 
         st.image(img, caption=f"Session {session_id}", use_container_width=True)
 
-        col1, col2 = st.columns([1,1])
-        with col1:
+        c1, c2 = st.columns(2)
+        with c1:
             if st.button("Auto-detect card crops", type="primary"):
                 boxes = detect_cards(img)
+                crop_paths, context_paths = save_crops(
+                    img, boxes, session_id, CROPS_DIR
+                )
                 st.session_state["boxes"] = boxes
-                st.session_state["crop_paths"] = save_crops(img, boxes, session_id)
-                st.session_state["candidates"] = default_candidates(st.session_state["crop_paths"])
-
-        with col2:
-            st.write("If auto-detection is messy, use manual/grid crops below.")
+                st.session_state["crop_paths"] = crop_paths
+                st.session_state["context_paths"] = context_paths
+                st.session_state["candidates"] = default_candidates(crop_paths)
+                st.rerun()
+        with c2:
+            st.info(
+                "v2 saves a padded context crop below each card so price and `req` labels "
+                "are less likely to be cut off."
+            )
 
         boxes = st.session_state.get("boxes", [])
         if boxes:
             st.subheader("Detected regions")
             st.image(draw_boxes(img, boxes), use_container_width=True)
-            st.caption(f"Detected {len(boxes)} candidate card regions.")
 
             crop_paths = st.session_state.get("crop_paths", [])
-            if crop_paths:
-                cols = st.columns(5)
-                for i, p in enumerate(crop_paths):
-                    with cols[i % 5]:
-                        st.image(str(p), caption=f"Crop {i+1}", use_container_width=True)
+            context_paths = st.session_state.get("context_paths", [])
+            cols = st.columns(5)
+            for i, p in enumerate(crop_paths):
+                with cols[i % 5]:
+                    st.image(str(p), caption=f"Card #{i+1}", use_container_width=True)
+                    if i < len(context_paths):
+                        with st.expander("Context"):
+                            st.image(str(context_paths[i]), use_container_width=True)
 
         st.divider()
-        st.subheader("Manual crop")
+        st.subheader("Manual crop fallback")
         w, h = img.size
-        c1,c2,c3,c4 = st.columns(4)
-        x1 = c1.number_input("x1", 0, w, 0)
-        y1 = c2.number_input("y1", 0, h, 0)
-        x2 = c3.number_input("x2", 0, w, w)
-        y2 = c4.number_input("y2", 0, h, h)
+        c1, c2, c3, c4 = st.columns(4)
+        x1 = c1.number_input("x1", 0, w, 0, key="mx1")
+        y1 = c2.number_input("y1", 0, h, 0, key="my1")
+        x2 = c3.number_input("x2", 0, w, w, key="mx2")
+        y2 = c4.number_input("y2", 0, h, h, key="my2")
 
         if x2 > x1 and y2 > y1:
-            manual_crop = img.crop((x1,y1,x2,y2))
-            st.image(manual_crop, width=350)
+            manual = img.crop((x1, y1, x2, y2))
+            st.image(manual, width=320)
             if st.button("Add manual crop"):
                 folder = CROPS_DIR / session_id
                 folder.mkdir(parents=True, exist_ok=True)
                 existing = list(folder.glob("crop_*.jpg"))
-                p = folder / f"crop_{len(existing)+1:02d}.jpg"
-                manual_crop.save(p, quality=94)
-                crop_paths = st.session_state.get("crop_paths", [])
-                crop_paths.append(p)
-                st.session_state["crop_paths"] = crop_paths
-                st.session_state["candidates"] = default_candidates(crop_paths)
-                st.success(f"Added {p.name}")
+                idx = len(existing) + 1
+                p = folder / f"crop_{idx:02d}.jpg"
+                cp = folder / f"context_{idx:02d}.jpg"
+                manual.save(p, quality=95)
+                # Manual crop is already user-selected context; use it for both.
+                manual.save(cp, quality=95)
 
+                crop_paths = st.session_state.get("crop_paths", []) + [p]
+                context_paths = st.session_state.get("context_paths", []) + [cp]
+                old = st.session_state.get("candidates")
+                new = default_candidates(crop_paths)
+                if old is not None and not old.empty:
+                    old = normalize_candidate_dtypes(old)
+                    for col in old.columns:
+                        if col in new.columns:
+                            new.loc[: len(old)-1, col] = old[col].values
+                st.session_state["crop_paths"] = crop_paths
+                st.session_state["context_paths"] = context_paths
+                st.session_state["candidates"] = new
+                st.rerun()
+
+# ---------- AI Review ----------
 with tabs[1]:
     crop_paths = st.session_state.get("crop_paths", [])
+    context_paths = st.session_state.get("context_paths", [])
+    candidates = st.session_state.get("candidates")
+
     if not crop_paths:
-        st.info("Upload a screenshot and create crops first.")
+        st.info("Create card crops in Intake first.")
     else:
-        st.subheader("Candidate reference")
-        cols = st.columns(6)
-        for i, p in enumerate(crop_paths):
-            with cols[i % 6]:
+        if candidates is None or candidates.empty:
+            candidates = default_candidates(crop_paths)
+            st.session_state["candidates"] = candidates
+        st.session_state.setdefault("ai_errors", {})
+
+        st.subheader("AI identification")
+        st.caption(
+            "AI fills exact identity + shop price + req marker. Ambiguous variants are "
+            "routed to Needs Review instead of silently entering the ranking."
+        )
+
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            if st.button(
+                "AI identify ALL crops",
+                type="primary",
+                disabled=not api_ready(),
+            ):
+                progress = st.progress(0)
+                status = st.empty()
+                df = st.session_state["candidates"].copy()
+                usages = st.session_state.get("ai_usages", [])
+                ai_errors = dict(st.session_state.get("ai_errors", {}))
+
+                for i, cp in enumerate(context_paths):
+                    status.write(f"Identifying card {i+1}/{len(context_paths)}...")
+                    try:
+                        result, usage = identify_crop_with_feedback(
+                            cp, i + 1, model, vision_detail, status
+                        )
+                        df = apply_ai_result(df, i + 1, result)
+                        usages.append({"crop_id": i + 1, **usage})
+                        ai_errors.pop(i + 1, None)
+                        append_audit(AUDIT_PATH, {
+                            "event": "ai_identification",
+                            "provider": "gemini",
+                            "session_id": st.session_state.get("session_id"),
+                            "crop_id": i + 1,
+                            "model": usage.get("model", model),
+                            "result": result,
+                        })
+                    except Exception as e:
+                        error_message = safe_ai_error(e)
+                        ai_errors[i + 1] = error_message
+                        append_audit(AUDIT_PATH, {
+                            "event": "ai_error",
+                            "provider": "gemini",
+                            "session_id": st.session_state.get("session_id"),
+                            "crop_id": i + 1,
+                            "model": model,
+                            "error": error_message,
+                        })
+                        st.error(f"Crop #{i+1}: {error_message}")
+                    progress.progress((i + 1) / len(context_paths))
+
+                st.session_state["candidates"] = df
+                st.session_state["ai_usages"] = usages
+                st.session_state["ai_errors"] = ai_errors
+                if ai_errors:
+                    status.warning("AI identification complete with crop errors")
+                else:
+                    status.success("AI identification complete")
+                st.rerun()
+
+        with col_b:
+            crop_choice = st.selectbox(
+                "Re-analyze one difficult crop",
+                list(range(1, len(crop_paths) + 1)),
+            )
+            if st.button(
+                "AI identify selected crop",
+                disabled=not api_ready(),
+            ):
+                cp = context_paths[crop_choice - 1]
+                retry_status = st.empty()
+                try:
+                    result, usage = identify_crop_with_feedback(
+                        cp, crop_choice, model, vision_detail, retry_status
+                    )
+                    st.session_state["candidates"] = apply_ai_result(
+                        st.session_state["candidates"], crop_choice, result
+                    )
+                    st.session_state.setdefault("ai_usages", []).append(
+                        {"crop_id": crop_choice, **usage}
+                    )
+                    st.session_state.setdefault("ai_errors", {}).pop(crop_choice, None)
+                    append_audit(AUDIT_PATH, {
+                        "event": "ai_identification",
+                        "provider": "gemini",
+                        "session_id": st.session_state.get("session_id"),
+                        "crop_id": crop_choice,
+                        "model": usage.get("model", model),
+                        "result": result,
+                    })
+                    st.success(f"Crop #{crop_choice} updated")
+                    st.rerun()
+                except Exception as e:
+                    error_message = safe_ai_error(e)
+                    st.session_state.setdefault("ai_errors", {})[
+                        crop_choice
+                    ] = error_message
+                    append_audit(AUDIT_PATH, {
+                        "event": "ai_error",
+                        "provider": "gemini",
+                        "session_id": st.session_state.get("session_id"),
+                        "crop_id": crop_choice,
+                        "model": model,
+                        "error": error_message,
+                    })
+                    st.error(error_message)
+
+        ai_errors = st.session_state.get("ai_errors", {})
+        if ai_errors:
+            st.subheader("AI errors")
+            for failed_crop_id, error_message in sorted(ai_errors.items()):
+                st.error(f"Crop #{failed_crop_id}: {error_message}")
+                if st.button(
+                    f"Retry crop #{failed_crop_id}",
+                    key=f"retry_failed_crop_{failed_crop_id}",
+                    disabled=not api_ready(),
+                ):
+                    retry_status = st.empty()
+                    cp = context_paths[failed_crop_id - 1]
+                    try:
+                        result, usage = identify_crop_with_feedback(
+                            cp,
+                            failed_crop_id,
+                            model,
+                            vision_detail,
+                            retry_status,
+                        )
+                        st.session_state["candidates"] = apply_ai_result(
+                            st.session_state["candidates"],
+                            failed_crop_id,
+                            result,
+                        )
+                        st.session_state.setdefault("ai_usages", []).append(
+                            {"crop_id": failed_crop_id, **usage}
+                        )
+                        st.session_state["ai_errors"].pop(failed_crop_id, None)
+                        append_audit(AUDIT_PATH, {
+                            "event": "ai_identification",
+                            "provider": "gemini",
+                            "session_id": st.session_state.get("session_id"),
+                            "crop_id": failed_crop_id,
+                            "model": usage.get("model", model),
+                            "result": result,
+                        })
+                        st.rerun()
+                    except Exception as e:
+                        error_message = safe_ai_error(e)
+                        st.session_state["ai_errors"][
+                            failed_crop_id
+                        ] = error_message
+                        append_audit(AUDIT_PATH, {
+                            "event": "ai_error",
+                            "provider": "gemini",
+                            "session_id": st.session_state.get("session_id"),
+                            "crop_id": failed_crop_id,
+                            "model": model,
+                            "error": error_message,
+                        })
+                        st.error(error_message)
+
+        st.divider()
+        st.subheader("Identification review")
+
+        df = st.session_state["candidates"].copy()
+        cols = st.columns(4)
+        for i, p in enumerate(context_paths):
+            row = df[pd.to_numeric(df["crop_id"], errors="coerce") == (i + 1)]
+            r = row.iloc[0] if not row.empty else None
+            with cols[i % 4]:
                 st.image(str(p), caption=f"#{i+1}", use_container_width=True)
+                if r is not None:
+                    title = candidate_value_or(r.get("card_name"), "Unidentified")
+                    num = candidate_value_or(r.get("card_number"), "?")
+                    st.markdown(f"**{title} — {num}**")
+                    st.write(
+                        f"¥{r.get('price_jpy') if pd.notna(r.get('price_jpy')) else '?'}"
+                        f" · req {r.get('req_count')}"
+                    )
+                    idc = r.get("id_confidence")
+                    st.write(
+                        "Exact-ID confidence: "
+                        f"{candidate_value_or(idc, '?')}"
+                    )
+                    if candidate_bool(r.get("needs_review")):
+                        st.warning(
+                            candidate_value_or(
+                                r.get("review_reason"), "Needs review"
+                            )
+                        )
+                    elif candidate_bool(r.get("verified")):
+                        st.success("Auto-verified")
+                    else:
+                        st.info("Review / verify before purchase")
 
-        if "candidates" not in st.session_state:
-            st.session_state["candidates"] = default_candidates(crop_paths)
+        st.subheader("Review queue")
+        review = review_filter(df, confidence_threshold)
+        if review.empty:
+            st.success("No candidates below the confidence gate.")
+        else:
+            st.dataframe(
+                review[
+                    [
+                        "crop_id", "card_name", "card_number", "set_or_promo",
+                        "id_confidence", "possible_matches", "visible_evidence",
+                        "review_reason"
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
 
-        candidates = st.session_state["candidates"].copy()
-
+# ---------- Worksheet ----------
+with tabs[2]:
+    candidates = st.session_state.get("candidates")
+    if candidates is None or candidates.empty:
+        st.info("Create crops first.")
+    else:
         st.subheader("Hunt worksheet")
-        st.caption("Fill exact ID + price first. Add 0–10 scores after you research sold comps.")
+        st.caption(
+            "Correct AI fields here. Set Verified=True once you personally confirm a difficult "
+            "variant. Market/value scoring remains manual in v2."
+        )
 
-        edited = st.data_editor(
-            candidates,
-            use_container_width=True,
+        try:
+            candidates_for_editor = normalize_candidate_dtypes(candidates)
+        except Exception as e:
+            st.error(f"Candidate numeric fields could not be normalized: {e}")
+            candidates_for_editor = candidates.copy()
+
+        edited_input = st.data_editor(
+            candidates_for_editor,
+            width="stretch",
             num_rows="dynamic",
             column_config={
                 "selected": st.column_config.CheckboxColumn(),
+                "verified": st.column_config.CheckboxColumn(),
+                "needs_review": st.column_config.CheckboxColumn(disabled=True),
+                "year": st.column_config.NumberColumn(
+                    "Year",
+                    min_value=1990,
+                    max_value=2100,
+                    step=1,
+                    format="%d",
+                ),
                 "price_jpy": st.column_config.NumberColumn(format="¥%d"),
                 "req_count": st.column_config.NumberColumn(min_value=0, step=1),
+                "id_confidence": st.column_config.NumberColumn(min_value=0, max_value=1, format="%.2f"),
+                "price_confidence": st.column_config.NumberColumn(min_value=0, max_value=1, format="%.2f"),
+                "req_confidence": st.column_config.NumberColumn(min_value=0, max_value=1, format="%.2f"),
                 "value": st.column_config.NumberColumn(min_value=0, max_value=10, step=0.5),
                 "demand": st.column_config.NumberColumn(min_value=0, max_value=10, step=0.5),
                 "liquidity_score": st.column_config.NumberColumn(min_value=0, max_value=10, step=0.5),
@@ -380,125 +512,182 @@ with tabs[1]:
                 "condition_score": st.column_config.NumberColumn(min_value=0, max_value=10, step=0.5),
                 "hunt_score": st.column_config.NumberColumn(disabled=True),
             },
-            key="candidate_editor",
+            key="candidate_editor_v2",
         )
-
-        edited["hunt_score"] = edited.apply(hunt_score_row, axis=1)
-        st.session_state["candidates"] = edited
+        try:
+            edited = normalize_candidate_dtypes(edited_input)
+            edited["hunt_score"] = edited.apply(hunt_score_row, axis=1)
+            edited = normalize_candidate_dtypes(edited)
+        except Exception as e:
+            st.error(
+                "Candidate edits were not saved because numeric conversion failed: "
+                f"{e}"
+            )
+            edited = candidates_for_editor
+        else:
+            st.session_state["candidates"] = edited
 
         st.subheader("Active ranking")
-        active = market_filter(edited, max_price)
+        active = active_filter(edited, max_price, confidence_threshold)
         show_cols = [
-            "crop_id","card_name","card_number","set_or_promo","price_jpy",
-            "hunt_score","deal_edge","liquidity_grade","id_confidence","notes"
+            "crop_id", "card_name", "card_number", "set_or_promo", "price_jpy",
+            "hunt_score", "deal_edge", "liquidity_grade", "id_confidence", "verified"
         ]
-        st.dataframe(active[show_cols], use_container_width=True, hide_index=True)
+        if active.empty:
+            st.info("No candidates currently pass budget + request + identity-confidence gates.")
+        else:
+            st.dataframe(active[show_cols], use_container_width=True, hide_index=True)
 
-        req_watch = edited[pd.to_numeric(edited["req_count"], errors="coerce").fillna(0) > 0]
-        if len(req_watch):
+        req = edited[pd.to_numeric(edited["req_count"], errors="coerce").fillna(0) > 0]
+        if not req.empty:
             st.subheader("Watch if released")
-            st.dataframe(req_watch[show_cols + ["req_count"]], use_container_width=True, hide_index=True)
+            st.dataframe(
+                req[show_cols + ["req_count"]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
         st.divider()
         if st.button("Save hunt session"):
             sid = st.session_state.get("session_id", datetime.now().strftime("%Y%m%d_%H%M%S"))
             path = HUNTS_DIR / f"{sid}.csv"
             edited.to_csv(path, index=False)
-            st.success(f"Saved: {path}")
+            append_audit(AUDIT_PATH, {
+                "event": "hunt_saved",
+                "session_id": sid,
+                "path": str(path),
+                "rows": len(edited),
+            })
+            st.success(f"Saved {path.name}")
 
         st.subheader("Mark purchases")
-        selected = edited[edited["selected"] == True].copy()
-        if len(selected):
-            purchase_names = selected.apply(
-                lambda r: f"#{r['crop_id']} {r['card_name'] or '(unnamed)'} — ¥{r['price_jpy'] if pd.notna(r['price_jpy']) else '?'}",
-                axis=1
-            ).tolist()
-            picks = st.multiselect("Cards bought", purchase_names)
+        selected = edited[edited["selected"].fillna(False).astype(bool)].copy()
+        labels = selected.apply(
+            lambda r: (
+                f"#{r['crop_id']} "
+                f"{candidate_value_or(r['card_name'], '(unnamed)')} "
+                f"{candidate_value_or(r['card_number'], '')} — "
+                f"¥{int(r['price_jpy']) if pd.notna(r['price_jpy']) else '?'}"
+            ),
+            axis=1,
+        ).tolist()
+        picks = st.multiselect("Cards bought", labels)
 
-            if st.button("Add purchases to ledger"):
-                ledger = load_ledger()
-                for label in picks:
-                    idx = purchase_names.index(label)
-                    r = selected.iloc[idx]
-                    inv_id = next_inventory_id(ledger)
-                    row = {
-                        "inventory_id": inv_id,
-                        "card_name": r.get("card_name"),
-                        "card_number": r.get("card_number"),
-                        "set_or_promo": r.get("set_or_promo"),
-                        "year": r.get("year"),
-                        "language": "Japanese",
-                        "variant": r.get("variant"),
-                        "raw_or_slab": "raw",
-                        "grade": "",
-                        "condition": "",
-                        "purchase_price_jpy": r.get("price_jpy"),
-                        "purchase_date": datetime.now().date().isoformat(),
-                        "source": "Card Hunt Local",
-                        "market_low_jpy": "",
-                        "market_high_jpy": "",
-                        "hunt_score": r.get("hunt_score"),
-                        "deal_edge": r.get("deal_edge"),
-                        "liquidity": r.get("liquidity_grade"),
-                        "id_confidence": r.get("id_confidence"),
-                        "portfolio_role": "",
-                        "status": "owned",
-                        "notes": r.get("notes"),
-                    }
-                    ledger = pd.concat([ledger, pd.DataFrame([row])], ignore_index=True)
-                save_ledger(ledger)
-                st.success(f"Added {len(picks)} purchase(s) to ledger.")
+        if st.button("Add purchases to ledger"):
+            ledger = load_ledger(LEDGER_PATH)
+            added = 0
+            for label in picks:
+                idx = labels.index(label)
+                r = selected.iloc[idx]
+                if not candidate_bool(r.get("verified")) and (
+                    candidate_bool(r.get("needs_review"))
+                    or float(pd.to_numeric(pd.Series([r.get("id_confidence")]), errors="coerce").fillna(0).iloc[0])
+                    < confidence_threshold
+                ):
+                    st.error(f"Cannot add {label}: exact identity is not verified.")
+                    continue
 
-with tabs[2]:
+                inv_id = next_inventory_id(ledger)
+                row = {
+                    "inventory_id": inv_id,
+                    "card_name": r.get("card_name"),
+                    "card_number": r.get("card_number"),
+                    "set_or_promo": r.get("set_or_promo"),
+                    "year": r.get("year"),
+                    "language": candidate_value_or(r.get("language"), "Japanese"),
+                    "variant": r.get("variant"),
+                    "raw_or_slab": candidate_value_or(
+                        r.get("raw_or_slab"), "raw"
+                    ),
+                    "grade": r.get("grade"),
+                    "condition": "",
+                    "purchase_price_jpy": r.get("price_jpy"),
+                    "purchase_date": datetime.now().date().isoformat(),
+                    "source": f"Card Hunt {st.session_state.get('session_id', '')}",
+                    "market_low_jpy": "",
+                    "market_high_jpy": "",
+                    "hunt_score": r.get("hunt_score"),
+                    "deal_edge": r.get("deal_edge"),
+                    "liquidity": r.get("liquidity_grade"),
+                    "id_confidence": r.get("id_confidence"),
+                    "portfolio_role": "",
+                    "status": "owned",
+                    "notes": r.get("notes"),
+                }
+                ledger = pd.concat([ledger, pd.DataFrame([row])], ignore_index=True)
+                append_audit(AUDIT_PATH, {
+                    "event": "purchase_added",
+                    "session_id": st.session_state.get("session_id"),
+                    "inventory_id": inv_id,
+                    "card_name": r.get("card_name"),
+                    "card_number": r.get("card_number"),
+                    "price_jpy": r.get("price_jpy"),
+                })
+                added += 1
+            if added:
+                save_ledger(ledger, LEDGER_PATH)
+                st.success(f"Added {added} purchase(s).")
+
+# ---------- Ledger ----------
+with tabs[3]:
     st.subheader("Purchase ledger")
-    ledger = load_ledger()
-
+    ledger = load_ledger(LEDGER_PATH)
     if ledger.empty:
-        st.info("No purchases recorded yet.")
+        st.info("No purchases recorded in this v2 data folder yet.")
     else:
-        edited_ledger = st.data_editor(
-            ledger,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="ledger_editor"
-        )
+        edited_ledger = st.data_editor(ledger, use_container_width=True, num_rows="dynamic")
         if st.button("Save ledger changes"):
-            save_ledger(edited_ledger)
+            save_ledger(edited_ledger, LEDGER_PATH)
             st.success("Ledger saved.")
 
-        owned = edited_ledger[edited_ledger["status"].fillna("owned").str.lower().eq("owned")]
+        owned = edited_ledger[
+            edited_ledger["status"].fillna("owned").str.lower().eq("owned")
+        ]
         cost = pd.to_numeric(owned["purchase_price_jpy"], errors="coerce").fillna(0).sum()
-        c1,c2 = st.columns(2)
+        c1, c2 = st.columns(2)
         c1.metric("Owned cards", len(owned))
         c2.metric("Cost basis", f"¥{cost:,.0f}")
 
-with tabs[3]:
+# ---------- Audit / Export ----------
+with tabs[4]:
+    st.subheader("AI usage this session")
+    usages = st.session_state.get("ai_usages", [])
+    if usages:
+        st.dataframe(pd.DataFrame(usages), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No API calls in this session.")
+
+    st.subheader("Audit trail")
+    if AUDIT_PATH.exists():
+        lines = AUDIT_PATH.read_text(encoding="utf-8").splitlines()
+        st.code("\n".join(lines[-30:]), language="json")
+    else:
+        st.caption("No audit events yet.")
+
     st.subheader("Export")
-    ledger = load_ledger()
-    csv_data = ledger.to_csv(index=False).encode("utf-8")
+    ledger = load_ledger(LEDGER_PATH)
+    st.download_button(
+        "Download ledger CSV",
+        ledger.to_csv(index=False).encode("utf-8"),
+        file_name="pokemon_card_ledger.csv",
+        mime="text/csv",
+    )
     xlsx = io.BytesIO()
     with pd.ExcelWriter(xlsx, engine="openpyxl") as writer:
         ledger.to_excel(writer, index=False, sheet_name="Inventory")
     xlsx.seek(0)
-
-    st.download_button(
-        "Download ledger CSV",
-        data=csv_data,
-        file_name="pokemon_card_ledger.csv",
-        mime="text/csv",
-    )
     st.download_button(
         "Download ledger Excel",
-        data=xlsx,
+        xlsx,
         file_name="pokemon_card_ledger.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    if st.session_state.get("candidates") is not None:
-        cand = st.session_state["candidates"]
+    cand = st.session_state.get("candidates")
+    if cand is not None and not cand.empty:
         st.download_button(
-            "Download current hunt worksheet",
-            data=cand.to_csv(index=False).encode("utf-8"),
+            "Download current hunt CSV",
+            cand.to_csv(index=False).encode("utf-8"),
             file_name="current_hunt.csv",
             mime="text/csv",
         )
