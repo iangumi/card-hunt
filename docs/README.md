@@ -13,6 +13,7 @@ The root [README](../README.md) remains the quick-start guide.
 | [Active v2.1 milestone](milestones/v2.1-workflow-hardening.md) | Implemented hardening baseline, remaining workflow scope, and completion criteria. |
 | [Decision log](DECISIONS.md) | Durable technical and product decisions already embodied in the app. |
 | [Development guide](DEVELOPMENT.md) | Setup, verification commands, change boundaries, review checklist, and Definition of Done. |
+| [Automation policy](AUTOMATION.md) | Guardrails, pause conditions, Git rules, milestone advancement, and reporting for automated runs. |
 
 ## Documentation rules
 
