@@ -1,139 +1,128 @@
-# Card Hunt Local v2
+# Card Hunt Local
 
-v2 adds the first AI-assisted stage to the working v1 flow:
+Card Hunt Local is a local-first Streamlit app for turning Pokémon card store
+screenshots into a reviewed hunt worksheet and purchase ledger.
 
-**store screenshot → local crops → AI exact card identification + price/req extraction → confidence gate → manual market scoring → ranking → purchase ledger**
+Its goal is simple: reduce screenshot transcription and ranking work without
+giving up human control over exact-card identity, market judgment, or purchase
+decisions.
 
-## What is new
+> screenshot → crop → AI identify → verify → rank → purchase ledger
 
-- Gemini vision identification for each card crop
-- Structured output for:
-  - card name
-  - card number
-  - set / promo
-  - year
-  - language
-  - variant
-  - raw / slab and visible grade
-  - store price in JPY
-  - req count
-  - confidence values
-  - possible alternative matches
-  - visible evidence
-- Conservative variant gate:
-  - ambiguous cards are routed to **Needs Review**
-  - cards below the confidence threshold do not enter Active Ranking
-  - you can manually set `Verified=True` after checking
-- Padded context crops to retain price / req stickers
-- Re-analyze a hard card one crop at a time
-- Audit trail for AI results and purchases
-- Token-usage table for the current session
-- Existing local/manual mode still works without an API key
+## Project status
 
-## Privacy / network behavior
+- **v2 complete:** local crop detection, Gemini identification, conservative
+  identity gates, manual scoring, ranking, ledger, and audit trail.
+- **v2.1 active:** workflow hardening, recovery, faster review, and usage
+  summaries. See the [active milestone](docs/milestones/v2.1-workflow-hardening.md).
 
-Cropping, ledger, scoring, and session files remain local.
+## Current capabilities
 
-**Only crops sent through an AI Identify button leave the local machine; those crops are sent to the Gemini API.**
-No API call occurs in normal/manual mode, which remains fully local.
+- Detect card regions locally or create manual crops.
+- Preserve padded crop context for store price and request labels.
+- Identify exact prints and visible store metadata with structured Gemini output.
+- Retry temporary Gemini failures and use a configurable fallback model.
+- Route ambiguous variants to review instead of silently ranking them.
+- Correct results manually and apply an explicit `Verified` override.
+- Calculate a weighted Hunt Score from user-entered market factors.
+- Gate Active Ranking and purchases by identity, budget, request count, and status.
+- Save hunt worksheets, maintain a purchase ledger, inspect audit events, and
+  export CSV or Excel.
+- Run the complete manual workflow without an API key.
 
-## Install
+Market research and sold-comparable collection are still manual. Card Hunt
+Local does not currently automate purchase recommendations.
 
-Python 3.11+ recommended.
+## Quick start
+
+Python 3.11 or newer is recommended.
 
 ### macOS / Linux
 
 ```bash
-unzip card_hunt_local_app_v2.zip
-cd card_hunt_local_app_v2
-
+git clone https://github.com/iangumi/card-hunt.git
+cd card-hunt
 cp .env.example .env
-# Edit .env and add GEMINI_API_KEY
-
+# Add GEMINI_API_KEY to .env only if you want AI identification.
 ./run.sh
 ```
 
 ### Windows PowerShell
 
 ```powershell
-Expand-Archive card_hunt_local_app_v2.zip
-cd card_hunt_local_app_v2
-
+git clone https://github.com/iangumi/card-hunt.git
+Set-Location card-hunt
 Copy-Item .env.example .env
-# Edit .env and add GEMINI_API_KEY
-
+# Add GEMINI_API_KEY to .env only if you want AI identification.
 .\run.ps1
 ```
 
-The first run creates `.venv`, installs dependencies and starts Streamlit.
+The launch script creates `.venv`, installs the dependencies, and starts
+Streamlit.
 
-## API model
+## Gemini configuration
 
-Default:
-
-```text
-GEMINI_API_KEY=...
+```dotenv
+GEMINI_API_KEY=your-key-here
 CARD_HUNT_MODEL=gemini-3.8-flash
 CARD_HUNT_FALLBACK_MODEL=gemini-3.5-flash
 ```
 
-The model selection applies to both the full hunt and one-crop retry workflow.
-Temporary `503 UNAVAILABLE` responses are retried four times with backoff before
-the optional fallback model is used.
+`GEMINI_API_KEY` is optional unless an AI Identify action is used. Never commit
+your populated `.env` file.
 
-## Migrate your v1 ledger/data
+The primary model retries temporary `503 UNAVAILABLE` responses four times with
+backoff and jitter before the fallback model is tried.
 
-If v1 is next to v2:
+## Privacy and local-first behavior
 
-```bash
-python migrate_v1.py ../card_hunt_local_app
-```
+Screenshot processing, crop detection, scoring, hunt files, the ledger, and the
+manual workflow stay on the local machine.
 
-The migration script does not overwrite files that already exist in v2.
+**Only a context crop explicitly submitted through an AI Identify action is
+sent to the Gemini API.** The full screenshot is not automatically uploaded.
 
-You can also manually copy the v1 `data/` folder.
+User records live beneath `data/`, which is ignored by Git. Back up that
+directory; it contains the ledger, saved hunts, crops, and audit log.
 
-## Recommended workflow
+## Screenshots
 
-1. Upload screenshot.
-2. Auto-detect or manually crop.
-3. AI Identify All.
-4. Check **Needs Review**.
-5. For difficult cards, retry only that crop.
-6. Correct exact variant manually when required.
-7. Mark `Verified=True`.
-8. Research recent sold comps externally.
-9. Fill the 0–10 market/Hunt Score factors.
-10. Purchase only after the exact-ID gate passes.
-11. Move purchased cards to Ledger.
+Project screenshots are not committed yet.
 
-## Why market research is still manual
+| View | Placeholder |
+| --- | --- |
+| Intake and detected crops | Screenshot to be added |
+| AI review and verification | Screenshot to be added |
+| Hunt worksheet and ranking | Screenshot to be added |
+| Purchase ledger | Screenshot to be added |
 
-v2 intentionally automates **identification + store metadata first**.
+## Roadmap
 
-This keeps the most error-prone step auditable before we add web/market automation.
-A future v3 can add sold-comp snapshots and research sources after v2 proves reliable.
+v2.1 is hardening the existing workflow. Planned releases then introduce a
+market-snapshot foundation, evidence collection and history, decision/scoring
+integration, hunt analytics, and portfolio lifecycle support before the v1.0
+stable release. Identification-quality improvements continue alongside this
+work and do not block the market roadmap.
 
-## Files
+See the full [project roadmap](docs/ROADMAP.md).
 
-```text
-data/ledger.csv
-data/hunts/
-data/crops/
-data/audit.jsonl
-```
-
-Back up the `data/` directory.
-
-## Project documentation
+## Documentation
 
 - [Documentation index](docs/README.md)
 - [Product definition](docs/PRODUCT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Roadmap](docs/ROADMAP.md)
+- [v2.1 workflow-hardening milestone](docs/milestones/v2.1-workflow-hardening.md)
 - [Decision log](docs/DECISIONS.md)
-- [Development guide](docs/DEVELOPMENT.md)
+- [Development guide and Definition of Done](docs/DEVELOPMENT.md)
 
-These documents describe the current v2 behavior and maintain a cautious path
-for future work. Roadmap items are proposals, not claims that a feature already
-exists.
+## Migrating v1 local data
+
+If the v1 directory is beside this repository:
+
+```bash
+python migrate_v1.py ../card_hunt_local_app
+```
+
+The migration skips destination files that already exist. Back up both data
+directories before migrating.

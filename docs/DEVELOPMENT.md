@@ -60,6 +60,31 @@ prevent imports or provider-independent unit tests.
 For documentation-only changes, `git diff --check` plus link and content review
 is sufficient unless the documentation change reveals a code concern.
 
+## Definition of Done
+
+A change is done when all applicable conditions are met:
+
+- The outcome matches the active milestone/specification and does not add
+  unstated product scope.
+- Existing tracked changes and relevant untracked work were inspected and
+  preserved.
+- User-owned data, file-format compatibility, privacy boundaries, exact-ID
+  gates, and the manual workflow remain intact or have an accepted migration
+  decision.
+- New behavior has offline automated coverage proportional to its risk; no unit
+  test calls Gemini or requires a real API key.
+- `pytest`, the module import smoke test, and `git diff --check` pass for code
+  changes. Documentation-only changes pass content, link, and whitespace review.
+- Required manual checks are completed or clearly reported as remaining when
+  they need a real UI, platform, screenshot, or provider call.
+- Product, architecture, roadmap, decision, setup, and milestone documentation
+  are updated wherever the shipped behavior changes them.
+- No secret, ignored user data, generated crop, hunt, ledger, or audit content is
+  included in the change.
+- The final handoff reports files changed, verification results, and anything
+  still requiring manual validation. Committing remains a separate explicit
+  user decision.
+
 ## Manual release checks
 
 Use disposable data or a backed-up copy; never repurpose the user's active

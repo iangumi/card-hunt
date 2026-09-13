@@ -1,117 +1,160 @@
-# Roadmap
+# Product roadmap
 
-This roadmap is a planning aid, not a release promise. Items move to the current
-baseline only after implementation, automated verification where practical,
-and the listed manual checks.
+This roadmap describes intended sequencing, not release dates. Current behavior
+is documented in [PRODUCT.md](PRODUCT.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+Future milestones remain proposals until their scope is implemented and their
+exit criteria are met.
 
-## Current baseline: v2
+| Status | Milestone |
+| --- | --- |
+| Completed | v1 Foundation |
+| Completed | v2 AI Identification |
+| Active | [v2.1 Workflow Hardening](milestones/v2.1-workflow-hardening.md) |
+| Planned | v3 Market Snapshot foundation |
+| Planned | v3.1 Automatic market evidence collection |
+| Planned | v3.2 Market summarization/history |
+| Planned | v3.3 Decision/scoring integration |
+| Planned | v4 Hunt UX / analytics |
+| Planned | v5 Portfolio lifecycle / repricing |
+| Planned | v1.0 Stable |
 
-The repository currently provides:
+## Completed: v1 Foundation
 
-- local screenshot intake, automatic detection, and manual crops;
-- stable upload fingerprints across ordinary Streamlit reruns;
-- tight crops and padded context crops;
-- optional Gemini structured identification with per-crop retry;
-- transient retry/backoff and configurable fallback behavior;
-- conservative exact-variant confidence and manual-verification gates;
-- nullable candidate numeric dtypes and failed-update isolation;
-- manual Hunt Score factors, Active Ranking, hunt saves, ledger, audit, and
-  exports;
-- mocked AI tests that do not make live network calls.
+**Outcome:** Established the local screenshot-to-worksheet workflow, local crop
+detection, manual scoring and ranking, saved hunts, purchase ledger, audit trail,
+and local file persistence.
 
-## Milestone 1: v2 operational validation
+## Completed: v2 AI Identification
 
-Goal: establish a repeatable manual release check over representative real
-screenshots without expanding product scope.
+**Outcome:** Added opt-in Gemini identification with a structured exact-card
+contract, padded context crops, confidence/manual-review gates, manual Verified
+override, and audit visibility for AI-assisted results.
 
-Proposed work:
+## Active: v2.1 Workflow Hardening
 
-- Maintain a non-secret manual test matrix for varied screenshot layouts,
-  languages, raw cards, slabs, labels, and ambiguous prints.
-- Verify navigation and rerun persistence across all five tabs.
-- Verify a different upload starts fresh screenshot-specific state while a
-  normal rerun does not.
-- Verify one-crop success/failure, all-crop partial failure, retry messaging,
-  fallback messaging, and preservation of previous identifications.
-- Verify saved hunt, purchase gate, ledger edit/save, CSV export, and Excel
-  export with disposable test data.
-- Record observed detection misses and identification ambiguity categories
-  without storing private screenshots in Git.
+**Goal:** Make the existing hunt workflow resilient, recoverable, and efficient
+enough for repeated real-world use.
 
-Exit criteria:
+**Major scope:** Complete transient-rate-limit handling, unresolved-only batch
+identification, inline review actions, improved crop selection and preview,
+session summaries, resumable hunts, duplicate purchase protection, persistent
+workflow navigation, and aggregated API usage summaries. The detailed shipped
+and remaining scope is in the
+[v2.1 milestone spec](milestones/v2.1-workflow-hardening.md).
 
-- The manual checklist is documented and has been completed on macOS/Linux; a
-  Windows result is recorded when a Windows environment is available.
-- No state-loss, identity-gate bypass, or user-data overwrite defect remains
-  open for the tested flows.
-- Any known limitations have a reproducible description and priority.
+**Exit criteria:** The remaining v2.1 workflow features are implemented and
+verified; reruns and per-crop failures preserve state; saved hunts can resume;
+duplicate ledger additions are prevented; critical gates have offline automated
+coverage; and the manual end-to-end release checklist passes without modifying
+or losing existing user data.
 
-## Milestone 2: regression coverage and persistence hardening
+## Planned: v3 Market Snapshot foundation
 
-Goal: reduce risk in the local workflow while preserving the current user
-experience and file formats.
+**Goal:** Add a trustworthy local structure for recording point-in-time market
+evidence before automating its collection.
 
-Candidate work, to be specified before implementation:
+**Major scope:** Define snapshot and evidence schemas, source/provenance fields,
+timestamps, currency and region, raw/slab and condition context, manual evidence
+entry, and compatibility with existing candidates and ledger records.
 
-- Add tests around review filtering, ledger schema compatibility, inventory ID
-  generation, append-only audit records, and hunt-save paths.
-- Add representative synthetic-image tests for crop ordering, padding bounds,
-  and overlap suppression where deterministic enough to be useful.
-- Add headless Streamlit tests for upload-state initialization and critical
-  gate behavior.
-- Define compatibility expectations for future candidate and ledger columns.
-- Evaluate atomic local writes and recovery behavior for interrupted saves.
+**Exit criteria:** Users can create, inspect, edit, and retain a timestamped
+market snapshot locally; every value has explicit source and context fields;
+existing hunt and ledger data remains readable; and no automated collection or
+valuation is implied.
 
-Exit criteria:
+## Planned: v3.1 Automatic market evidence collection
 
-- Critical identity and purchase gates have automated coverage at both helper
-  and UI-orchestration levels.
-- Existing user data remains readable, and migration/recovery behavior is
-  documented before any persistence-format change.
-- Unit tests remain offline and require no Gemini credentials.
+**Goal:** Collect relevant market evidence from approved sources while keeping
+each observation traceable and reviewable.
 
-## Milestone 3: identification quality improvements
+**Major scope:** Source adapters, query construction from verified card identity,
+rate-limit and transient-error handling, provenance capture, deduplication,
+partial-failure behavior, caching, and explicit user controls for network use.
 
-Goal: improve exact-print review efficiency without weakening conservative
-behavior.
+**Exit criteria:** Supported sources return timestamped, attributable evidence;
+failed sources do not erase existing snapshots; collection respects documented
+source and privacy constraints; and mocked tests require no live network calls.
 
-Candidate work:
+## Planned: v3.2 Market summarization/history
 
-- Categorize false matches and low-confidence results using sanitized notes.
-- Evaluate crop/context presentation and prompt/schema refinements against a
-  controlled local test set.
-- Make evidence and alternative matches easier to compare during manual review.
-- Define explicit quality thresholds before changing auto-verification rules.
-- Evaluate model changes only with compatibility, cost, latency, and failure
-  behavior documented.
+**Goal:** Turn collected evidence into transparent summaries and a useful local
+history without hiding uncertainty.
 
-Exit criteria:
+**Major scope:** Comparable normalization, filters for condition/grading/region,
+outlier visibility, snapshot summaries, historical storage, trend views, and
+clear separation between observed evidence and derived values.
 
-- Exact-print accuracy is measured separately from species accuracy.
-- Ambiguous results continue to set `needs_review=true` and remain blocked.
-- Provider or model changes preserve the structured contract and offline tests.
+**Exit criteria:** Users can trace every summary to its underlying evidence,
+compare snapshots over time, see exclusions and uncertainty, and recover the
+original observations without relying on a generated narrative.
 
-## Later discovery: market-research assistance
+## Planned: v3.3 Decision/scoring integration
 
-Automated market research is not part of v2 and has no committed implementation
-milestone. Before any v3 work, discovery must define:
+**Goal:** Incorporate reviewed market evidence into hunt decisions while keeping
+the collector in control.
 
-- permitted and reliable data sources;
-- provenance and timestamp requirements for every comparable sale;
-- region, currency, condition, grading, fees, and outlier rules;
-- privacy, terms-of-service, rate-limit, and cost constraints;
-- how uncertainty is presented and how manual judgment remains authoritative.
+**Major scope:** Evidence-aware scoring inputs, freshness indicators, deal-edge
+calculations, confidence presentation, manual overrides, and auditability of the
+values used for ranking.
 
-No market estimate or purchase recommendation should ship until those decisions
-and validation criteria are accepted in [DECISIONS.md](DECISIONS.md).
+**Exit criteria:** Ranking shows which evidence and user inputs drive each
+result; stale, missing, or conflicting evidence is visible; manual decisions
+remain authoritative; and exact-ID gates still apply before ranking or purchase.
 
-## Cross-cutting release gates
+## Planned: v4 Hunt UX / analytics
 
-Every milestone must preserve these invariants:
+**Goal:** Make live hunts faster to operate and make past hunt outcomes easier
+to understand.
+
+**Major scope:** Streamlined navigation and review, richer filtering and
+comparison, hunt-level summaries, funnel/outcome analytics, and useful views over
+saved local history.
+
+**Exit criteria:** Representative hunts require fewer review interactions;
+analytics can be reproduced from local records; navigation and recovery work
+across reruns; and usability improvements do not weaken identity or purchase
+gates.
+
+## Planned: v5 Portfolio lifecycle / repricing
+
+**Goal:** Extend the ledger from acquisition tracking into a maintainable local
+portfolio lifecycle.
+
+**Major scope:** Inventory lifecycle states, portfolio roles, periodic market
+snapshots, repricing workflows, realized/unrealized tracking, review queues, and
+export-compatible history.
+
+**Exit criteria:** A purchased card can be tracked through its lifecycle without
+losing acquisition history; repricing retains source and timestamp context;
+portfolio summaries reconcile to local records; and migrations preserve prior
+ledger data.
+
+## Planned: v1.0 Stable
+
+**Goal:** Consolidate the validated product into a stable, documented release
+with explicit compatibility expectations.
+
+**Major scope:** Resolve release-blocking defects, stabilize supported local data
+formats, complete migration and recovery documentation, establish repeatable
+release checks, and align setup, product, architecture, and operational docs.
+
+**Exit criteria:** Supported workflows pass automated and manual release checks;
+upgrades preserve documented user data; install and recovery steps are verified
+on supported platforms; known limitations are published; and the release is
+tagged only after the Definition of Done is satisfied.
+
+## Ongoing, non-blocking work
+
+Exact-print identification quality, crop heuristics, prompt/schema refinements,
+and model evaluation continue across milestones. Improvements must preserve the
+conservative review gate and provider contract, but they are not prerequisites
+for starting the market-research milestones.
+
+## Cross-cutting invariants
 
 - User-owned `data/` content is never silently replaced or deleted.
 - Manual operation works without an API key.
-- Only explicitly AI-submitted crops leave the local machine.
+- Only explicitly submitted crops leave the local machine.
 - API keys never enter source control or audit records.
-- One malformed or failed AI result cannot erase prior candidate/session state.
+- One failed or malformed result cannot erase prior candidate/session state.
 - Exact-card ambiguity cannot silently enter Active Ranking or the ledger.

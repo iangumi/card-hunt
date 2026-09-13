@@ -10,8 +10,9 @@ The root [README](../README.md) remains the quick-start guide.
 | [Product definition](PRODUCT.md) | Who the app serves, what v2 does, its safety boundaries, and how success is judged. |
 | [Architecture](ARCHITECTURE.md) | Runtime components, data flow, state, persistence, AI boundary, and failure behavior. |
 | [Roadmap](ROADMAP.md) | Current baseline and proposed milestones, with explicit exit criteria. |
+| [Active v2.1 milestone](milestones/v2.1-workflow-hardening.md) | Implemented hardening baseline, remaining workflow scope, and completion criteria. |
 | [Decision log](DECISIONS.md) | Durable technical and product decisions already embodied in the app. |
-| [Development guide](DEVELOPMENT.md) | Setup, verification commands, change boundaries, and review checklist. |
+| [Development guide](DEVELOPMENT.md) | Setup, verification commands, change boundaries, review checklist, and Definition of Done. |
 
 ## Documentation rules
 
@@ -31,7 +32,7 @@ The root [README](../README.md) remains the quick-start guide.
 
 ## Planning workflow
 
-1. Start a proposed change in [ROADMAP.md](ROADMAP.md) or an issue.
+1. Start with the active milestone, [ROADMAP.md](ROADMAP.md), or an issue.
 2. Define the user outcome, constraints, acceptance criteria, data impact, and
    manual-test requirements before implementation.
 3. Add a decision entry when the change creates a durable constraint or
